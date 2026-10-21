@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{AGENT_NAME}}</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="chat-body">
+<div class="chat">
+  <header class="chat-head">
+    <div><b>{{AGENT_NAME}}</b><div class="muted small"><span class="dot on"></span> Live on AgentCloud</div></div>
+  </header>
+  <div id="msgs" class="msgs">
+    <div class="bubble bot">Hi! Send me a message.</div>
+  </div>
+  <form id="form" class="composer">
+    <input id="input" placeholder="Type a message…" autocomplete="off" autofocus>
+    <button class="primary">Send</button>
+  </form>
+</div>
+<script>
+const msgs = document.getElementById('msgs'), input = document.getElementById('input');
+function add(text, who) {
+  const b = document.createElement('div'); b.className = 'bubble ' + who; b.textContent = text;
+  msgs.appendChild(b); msgs.scrollTop = msgs.scrollHeight; return b;
+}
+document.getElementById('form').onsubmit = async (e) => {
+  e.preventDefault();
+  const text = input.value.trim(); if (!text) return;
+  input.value = ''; add(text, 'me');
+  const pending = add('…', 'bot typing');
+  try {
+    const r = await fetch('/a/{{AGENT_ID}}/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: text }) });
+    pending.textContent = (await r.json()).reply;
+  } catch { pending.textContent = 'Could not reach the agent.'; }
+  pending.classList.remove('typing');
+};
+</script>
+</body>
+</html>

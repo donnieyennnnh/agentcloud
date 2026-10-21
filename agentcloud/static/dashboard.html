@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentCloud</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="logo">◆</span> AgentCloud</div>
+  <div id="status" class="status"><span class="dot"></span> connecting…</div>
+</header>
+
+<main class="grid">
+  <section class="card">
+    <h2>Deploy an agent</h2>
+    <label>Name<input id="name" value="Demo agent"></label>
+    <label>Agent code <small>must define <code>run(message) -> str</code></small>
+      <textarea id="code" spellcheck="false" rows="14" wrap="off">import datetime
+
+def run(message: str) -> str:
+    text = message.lower()
+    if "time" in text:
+        return f"Server time is {datetime.datetime.utcnow():%H:%M:%S} UTC. I'm running in the cloud!"
+    if "hello" in text or "hi" in text:
+        return "Hello! I'm a demo agent hosted on AgentCloud."
+    return f"You said: {message!r}. Try asking me the time."
+</textarea></label>
+    <label>Secrets <small>one per line, KEY=value (e.g. ANTHROPIC_API_KEY=sk-ant-…)</small>
+      <textarea id="env" rows="2" spellcheck="false" placeholder="ANTHROPIC_API_KEY=..."></textarea></label>
+    <button id="deployBtn" class="primary">Deploy ▲</button>
+    <p id="deployMsg" class="msg"></p>
+
+    <h2 class="mt">Your agents</h2>
+    <ul id="agents" class="agents"><li class="muted">No agents yet.</li></ul>
+  </section>
+
+  <section class="card" id="detail" hidden>
+    <div class="row between">
+      <h2 id="dName">Agent</h2>
+      <span class="pill live">● LIVE</span>
+    </div>
+    <div class="share">
+      <div id="qr" class="qr"></div>
+      <div class="share-info">
+        <div class="muted small">Public URL — anyone can open this</div>
+        <a id="dUrl" class="url" target="_blank"></a>
+        <div class="row gap">
+          <button id="copyBtn">Copy link</button>
+          <a id="openBtn" class="button" target="_blank">Open chat ↗</a>
+        </div>
+        <div class="muted small mt-s">Scan the QR code with your phone (use mobile data, not Wi-Fi) to prove it's on the internet.</div>
+      </div>
+    </div>
+
+    <details class="tg">
+      <summary>Connect a Telegram bot</summary>
+      <p class="small muted">Create a bot with @BotFather in Telegram, paste its token here. Only works once this server is on a public https URL.</p>
+      <div class="row gap"><input id="tgToken" placeholder="123456:ABC-DEF…"><button id="tgBtn">Connect</button></div>
+      <p id="tgMsg" class="msg"></p>
+    </details>
+
+    <div class="row between mt">
+      <h3>Live logs</h3>
+      <span class="muted small" id="logCount">0 events</span>
+    </div>
+    <div id="logs" class="logs"></div>
+    <button id="deleteBtn" class="danger mt">Delete agent</button>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let current = null, stream = null, count = 0;
+
+async function refreshStatus() {
+  try {
+    const s = await (await fetch('/api/status')).json();
+    const h = Math.floor(s.uptime_s / 3600), m = Math.floor(s.uptime_s % 3600 / 60);
+    $('status').innerHTML = `<span class="dot on"></span> Running · region <b>${s.region}</b> · uptime ${h}h ${m}m`;
+  } catch { $('status').innerHTML = '<span class="dot"></span> unreachable'; }
+}
+
+async function loadAgents() {
+  const list = await (await fetch('/api/agents')).json();
+  $('agents').innerHTML = list.length ? '' : '<li class="muted">No agents yet.</li>';
+  for (const a of list) {
+    const li = document.createElement('li');
+    li.className = current && current.id === a.id ? 'active' : '';
+    li.innerHTML = `<b></b><span class="muted small">${a.runs} runs${a.telegram ? ' · Telegram' : ''}</span>`;
+    li.querySelector('b').textContent = a.name;
+    li.onclick = () => select(a);
+    $('agents').appendChild(li);
+  }
+  return list;
+}
+
+function parseEnv(text) {
+  const env = {};
+  text.split('\n').forEach(l => { const i = l.indexOf('='); if (i > 0) env[l.slice(0, i).trim()] = l.slice(i + 1).trim(); });
+  return env;
+}
+
+$('deployBtn').onclick = async () => {
+  $('deployBtn').disabled = true; $('deployMsg').textContent = 'Deploying…';
+  const res = await fetch('/api/agents', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: $('name').value, code: $('code').value, env: parseEnv($('env').value) }) });
+  const data = await res.json();
+  $('deployBtn').disabled = false;
+  if (!res.ok) { $('deployMsg').textContent = data.detail || 'Deploy failed'; return; }
+  $('deployMsg').textContent = 'Deployed ✓';
+  const list = await loadAgents();
+  select(list.find(a => a.id === data.id));
+};
+
+function select(a) {
+  current = a; $('detail').hidden = false;
+  $('dName').textContent = a.name;
+  $('dUrl').textContent = a.url; $('dUrl').href = a.url; $('openBtn').href = a.url;
+  $('qr').innerHTML = `<img src="/api/agents/${a.id}/qr.svg" width="168" height="168" alt="QR code for ${a.url}">`;
+  $('tgMsg').textContent = '';
+  loadAgents();
+  $('logs').innerHTML = ''; count = 0; $('logCount').textContent = '0 events';
+  if (stream) stream.close();
+  stream = new EventSource(`/api/agents/${a.id}/logs/stream`);
+  stream.onmessage = (e) => addLog(JSON.parse(e.data));
+}
+
+function addLog(l) {
+  const div = document.createElement('div');
+  div.className = 'log ' + l.kind;
+  const t = new Date(l.ts * 1000).toLocaleTimeString();
+  const icon = { request: '→', reply: '←', error: '✕', info: '•' }[l.kind];
+  div.innerHTML = `<span class="t">${t}</span><span class="src">${l.source}</span><span class="i">${icon}</span><span class="txt"></span>${l.duration_ms != null ? `<span class="ms">${l.duration_ms}ms</span>` : ''}`;
+  div.querySelector('.txt').textContent = l.text;
+  $('logs').appendChild(div);
+  $('logs').scrollTop = $('logs').scrollHeight;
+  $('logCount').textContent = `${++count} events`;
+  div.classList.add('flash');
+}
+
+$('copyBtn').onclick = () => { navigator.clipboard.writeText(current.url); $('copyBtn').textContent = 'Copied ✓'; setTimeout(() => $('copyBtn').textContent = 'Copy link', 1500); };
+
+$('tgBtn').onclick = async () => {
+  $('tgMsg').textContent = 'Connecting…';
+  const res = await fetch(`/api/agents/${current.id}/telegram`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: $('tgToken').value.trim() }) });
+  const d = await res.json();
+  $('tgMsg').innerHTML = res.ok ? `Connected! Message <a target="_blank" href="${d.link}">@${d.bot}</a> on Telegram.` : (d.detail || 'Failed');
+};
+
+$('deleteBtn').onclick = async () => {
+  if (!confirm('Delete this agent?')) return;
+  await fetch(`/api/agents/${current.id}`, { method: 'DELETE' });
+  if (stream) stream.close();
+  current = null; $('detail').hidden = true; loadAgents();
+};
+
+refreshStatus(); setInterval(refreshStatus, 10000);
+loadAgents().then(list => { if (list.length) select(list[0]); });
+</script>
+</body>
+</html>
